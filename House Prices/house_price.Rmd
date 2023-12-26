@@ -1,12 +1,11 @@
 ---
-title: "House Prices Regression"
+title: "House Prices Regression using the R CARET package"
 author: 'Gabriela Moura'
 output: html_notebook
 ---
 ## Importing packages
-
-```{r message=TRUE}
-packages <- c('tidyverse', 'Hmisc', 'caret', 'randomForest')
+```{r message=FALSE, warning=FALSE}
+packages <- c('tidyverse', 'Hmisc', 'caret', 'randomForest', 'MLmetrics')
 
 options(rgl.debug = TRUE)
 
@@ -20,47 +19,159 @@ if(sum(as.numeric(!packages %in% installed.packages())) != 0){
   sapply(packages, require, character = T) 
 }
 ```
-
 ## Importing the datasets
-
 ```{r message=FALSE}
-test <- read.csv(".../Kaggle/House Prices/house/test.csv")
-train <- read.csv("...Kaggle/House Prices/house/train.csv")
+test <- read.csv("test.csv")
+train <- read.csv("train.csv")
+```
+## Exploratory Data Analysis
+
+The train data set has 81 variables with 1459 observations. 
+
+Overview of the train data set.
+```{r echo=TRUE}
+glimpse(train)
 ```
 
-### Overview of the train data set
-
+### Inspecting the target variable
+Distribution of the house sale prices
 ```{r echo=TRUE}
-glimpse(dataset)
+train %>% select(SalePrice) %>% summary()
 ```
 
-### Distribution of the house prices
-
+Plot of house sale price distribution
 ```{r echo=TRUE}
-dataset %>% select(SalePrice) %>% summary()
-```
-
-Plot of house price distribution
-
-```{r echo=TRUE}
-dataset %>% select(SalePrice) %>% ggplot(aes(x = SalePrice)) +
+train %>% select(SalePrice) %>% ggplot(aes(x = SalePrice)) +
   geom_histogram(aes(y=..density..),alpha=0.5, fill = 'green') +
   geom_density(alpha=0.6)
 ```
 
-
-### 
-
-This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
-
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
-
-```{r}
-plot(cars)
+## Data Wrangling
+The Id column is not going to be used for the prediction, so a new data set is created.
+```{r include=FALSE}
+dataset <- train %>% select(-Id)
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+According with the [data set description](https://github.com/GabrielaMourars/Kaggle-Competions/blob/main/House%20Prices/data_description.txt), some of the variables are factors, but they are presented in the data set with the wrong type of feature. It needs to be corrected before creating the model.
+```{r include=FALSE}
+# a object with name of all the factor variables name
+factor_variables <- c('MSZoning', 'LandContour', 'Street', 'Alley','LotShape', 
+                      'Utilities', 'LotConfig', 'LandSlope', 'Neighborhood', 
+                      'Condition1', 'Condition2', 'BldgType', 'HouseStyle',
+                      'OverallQual', 'OverallCond', 'RoofStyle', 
+                      'RoofMatl','Exterior1st', 'Exterior2nd', 'MasVnrType',
+                      'ExterQual', 'ExterCond', 'Foundation', 'BsmtQual',
+                      'BsmtCond', 'BsmtExposure', 'BsmtFinType1', 'BsmtFinType2',
+                      'Heating', 'HeatingQC', 'CentralAir', 'Electrical',
+                      'KitchenQual', 'Functional', 'FireplaceQu','GarageType',
+                      'GarageFinish', 'GarageQual', 'GarageCond', 'PavedDrive',
+                      'PoolQC', 'Fence', 'MiscFeature', 'SaleType','SaleCondition')
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+# rewriting the data set with the correct features type
+dataset <- dataset %>% mutate_at(factor_variables, as.factor)
+```
 
-The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+### Missing Values
+The data set present variables with missing values. The function above gives an idea of the percentage of missing values in the each column 
+```{r include=FALSE}
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+```
+Applying the function in the data set and preseting the result as a data frame
+```{r echo=TRUE}
+na <- apply(dataset,2,pMiss) %>% sort(decreasing = TRUE) %>% as.data.frame()
+na 
+```
+
+There are 5 variables in which the amount of missing values are over 40% of the column information. Despite the tree based models naturally deal with the missing values this huge amount of missing values can harm the model performance, so they will be removed from the data set.
+```{r include=FALSE}
+# removing the columns with more than 40% of the observations as missing values
+dataset_clean <- dataset %>% select(- FireplaceQu, -MiscFeature, -Fence, -PoolQC,-Alley)
+
+```
+
+### Model Training
+
+Now that the data set is cleaner it is ready for the training. Here I’m going to use the CARET package from R that contain several tools to speed the training process. This package has a uniform interface for different methods of regression and classification, as well as a task template for parameter tuning with grid search, data pre processing for example.
+
+The function trainControl controls how the models are created. The first parameter is the method of resampling to avoid overfitting which is the repeated K-fold cross validation with 10 folds repeated 5 times. CARET has some performance metrics by default.
+```{r include=FALSE}
+fitControl <- caret::trainControl(## 10-fold CV
+  method = "repeatedcv",
+  number = 10,
+  ## repeated ten times
+  repeats = 5,
+  ## Evaluate performance using 
+  ## the following function
+  summaryFunction = defaultSummary
+)
+```
+
+randomForest is the model chosen for the training process and mtry is the tuning parameter which corresponds to the number of randomly selected predictors.
+```{r include=FALSE}
+rfGrid <- expand.grid(mtry = c(1:10))
+```
+
+Now, the model can be build. The data set still has missing values, to complete the data set the function na.roughfix will replace the Na's in muneric variable with the column medians, and for factor variables the Na's will be replaced by most frequency levels.
+
+```{r include=FALSE}
+set.seed(123)
+# ajuste do modelo no data set de treino para encontrar os melhores parâmetros
+rf_model <- caret::train(SalePrice ~., data = dataset_clean, 
+                         method = "rf", 
+                         trControl = fitControl, 
+                         verbose = FALSE, 
+                         tuneGrid = rfGrid,
+                         #preProcess = "knnImpute",
+                         na.action = na.roughfix,
+                         ## Specify which metric to optimize
+                         metric = "RMSE")
+```
+
+#### Plotting the resample profile
+```{r echo=TRUE}
+plot(rf_model)
+```
+The resampling profile shows that best model has 10 randomly selected predictors.
+
+#### Ploting the most important variables
+```{r echo=TRUE}
+varImp(rf_model) %>% plot(top = 10)
+```
+In the top 10 most important variables, the most important feature is the living area square feet (GrLivArea), followed by the size of the garage car capacity (GarageCars), the size of the garage area (GarageArea), the total square feet basement area (TotalBsmtSF) and, first floor square feet (X1stFlrSF). 
+
+The process of buy a house can be facilitate by starting with these five features, helping to shrinkage the options. 
+
+#### Calculating the RMSE
+Now, the RMSE logarithm between the predicted values of the train data set and observed sales price is calculated.
+```{r}
+RMSE(log(rf_model$finalModel$predicted), log(dataset_clean$SalePrice))
+```
+The small value of the RMSE indicates that the model has a good performance on the train data set. 
+
+### Predicting
+The model is going to be applied on the test data set, but first it has to pass for some preparation, in the same way as the data set used to train the model. 
+
+The test data set has 80 columns with 1459 observations. The SalesPrice column is not presented. 
+```{r}
+test %>% head(5)
+```
+Preparing the test data set
+```{r include=FALSE}
+test_dataset <- test %>% mutate_at(factor_variables, as.factor) %>% select(-Id,- FireplaceQu, -MiscFeature, -Fence, -PoolQC,-Alley)
+```
+The missing values will be treated in the same way. The prediction on the test data set can now be perform.
+```{r include=FALSE}
+rf.pred <- predict(rf_model,test_dataset, na.action=na.roughfix) %>% as.data.frame()
+```
+
+### Preparing the sunbmission file
+Th submission file must have two columns, one with the Id and the other with the predicted sale value.
+```{r include=FALSE}
+submission <- test %>% select(Id) %>% cbind(rf.pred) %>% dplyr::rename('SalePrice' = 2)
+```
+The submission data set is exported as a .csv file.
+```{r include=FALSE}
+library(data.table)
+write.csv(submission, "submission.csv",eol = "\n", row.names = FALSE)
+```
+The submission file can be submitted to Kaggle.
