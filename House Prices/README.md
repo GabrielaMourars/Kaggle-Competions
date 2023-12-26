@@ -7,4 +7,6 @@ The goal is to predict the price of each house in sale based on the Ames House D
 The metric chose for the submission evaluation is the Root Mean Square Error (RMSE) between the logarithm of the predicted value and the logarithm of the observed value. 
 
 Data description is available in
-https://github.com/GabrielaMourars/Kaggle-Competions/blob/main/House%20Prices/data_description.txt
+https://www.kaggle.com/competitions/house-prices-advanced-regression-techniques/data
+
+
