@@ -1,0 +1,241 @@
+---
+title: "Multi-Class Prediction of Cirrhosis Outcomes - Kaggle Competition"
+author: "Gabriela Moura"
+output: html_document
+---
+
+# Importing packages
+```{r message=FALSE, warning=FALSE}
+packages <- c('tidyverse', 'nnet', 'caret', 'randomForest', 'xgboost',
+              'MLmetrics', 'DataExplorer', 'ggpmisc', 'cowplot', 'data.table')
+
+options(rgl.debug = TRUE)
+
+if(sum(as.numeric(!packages %in% installed.packages())) != 0){
+  instalador <- packages[!packages %in% installed.packages()]
+  for(i in 1:length(instalador)) {
+    install.packages(instalador, dependencies = T)
+    break()}
+  sapply(packages, require, character = T) 
+} else {
+  sapply(packages, require, character = T) 
+}
+```
+
+# Importing the datasets
+```{r message=FALSE}
+test <- read.csv("test.csv")
+train <- read.csv("train.csv")
+```
+
+# Exploratory Data Analysis
+
+```{r}
+glimpse(train)
+```
+
+The data set has 20 columns with 7905 observations in which the variables labeled as integers, doubles, and characters. Status is the target variable. According to the data set description some variables are actually factors. Correcting this issue:
+
+```{r}
+train <- train %>% mutate_at(c('Status','Drug','Sex','Ascites','Hepatomegaly',
+                               'Spiders', 'Edema', 'Stage'),as.factor) %>% 
+  mutate_at(c('Cholesterol', 'Copper', 'Tryglicerides', 'Platelets'),as.integer)
+
+```
+
+With the variables in the correct type it is possible to do a summary of the data set.
+
+```{r}
+plot_intro(train)
+```
+
+The data set is complete, with no missing values, which will help during the model creation, since it will not be require the use of some technique to fill these values in the data set.
+
+# Inspecting the target variable
+
+```{r echo=TRUE}
+tb1 <- data.frame(Status = c('C', 'CL', 'D'),
+                  Label = c('Censored', 'Censored due to liver tx', 'Death'))
+p1 <- train %>% 
+  ggplot(aes(x = Status, fill = Status)) +
+  geom_bar(width=0.5)+
+  coord_flip() + 
+  labs(y = 'Frequency') +
+  annotate(geom = "table", x = 3.5, y = 5000, label = list(tb1), size = 1.3)+
+  theme(#text = element_text(size = 12),
+    panel.background = element_rect("white"),
+    panel.grid = element_line("grey95"),
+    panel.border = element_rect(NA),
+    legend.position= 'none')
+
+p2 <- train %>% 
+  ggplot(mapping = aes(x = Status, fill = Sex)) +
+  geom_bar() +
+  labs(y = 'Frequency') +
+  theme(#text = element_text(size = 12),
+    panel.background = element_rect("white"),
+    panel.grid = element_line("grey95"),
+    panel.border = element_rect(NA))
+
+p3 <- train %>% 
+  ggplot(mapping = aes(x = Status, fill = Drug)) +
+  geom_bar() +
+  labs(y = 'Frequency')+
+  theme(#text = element_text(size = 12),
+    panel.background = element_rect("white"),
+    panel.grid = element_line("grey95"),
+    panel.border = element_rect(NA))
+
+p4 <- # Age in years
+train %>% 
+  ggplot(aes(x = Status, y = Age/365, fill = Status)) +
+  geom_boxplot() +
+  theme(#text = element_text(size = 12),
+    panel.background = element_rect("white"),
+    panel.grid = element_line("grey95"),
+    panel.border = element_rect(NA),
+    legend.position= 'none')
+
+plot_grid(p1, p2, p3, p4, labels = 'AUTO')
+```
+
+Graph A presents the visualization of the frequency distribution of the patients. The table presets the label of each status. The majority of patients were alive until N-days, followed by patients that was deceased, and the small column represents the number of patients who were alive due to a liver transplant. Graph B shows that females are the majority of the patients in the data set. In the study, half of the patients received D-penicillamine, while the other half received placebo for each status, as presented in graph C. The patients ages range around 40-60, graph D. 
+
+```{r}
+plot_correlation(train)
+```
+
+The most interesting information from the correlation plot is that the drug manipulation on the patients has little effect on the final status. It is counterintuitive, since patients receiving the medication would be more likely to have positive outcomes.
+
+# Preparation of the data set
+The id column is not necessary to train the data set.
+```{r}
+train <- train %>% select(-id)
+```
+
+# Model training
+I chose tree machine learning models to check which performance is better. Multi-class logarithmic loss is the metric to evaluate performance.
+
+To avoid oversampling a K-fold cross-validation method of resampling is performed with 10 folds repeated 5 times. 
+
+```{r}
+fit.control <- trainControl(method = "repeatedcv", 
+                            number = 5, 
+                            repeats = 10,
+                            summaryFunction = mnLogLoss,
+                            classProbs = TRUE)
+```
+
+The multinomial is the frist model trained, followed by the random forest, than XgBoost.
+```{r}
+set.seed(123)  
+model_multinom <- train(Status ~ ., 
+                      data = train,
+                      method = "multinom", 
+                      trControl = fit.control,
+                      metric = "logLoss",
+                      tuneGrid = expand.grid(decay = c(0,0.1,0.2,0.3,0.4,0.5,0.6)),
+                      trace = FALSE)
+```
+
+```{r}
+model_random <- train(Status ~ ., 
+                       data = train,
+                       method = "rf",
+                       tuneGrid = expand.grid(mtry = c(1:6)),
+                       ## Specify which metric to optimize
+                       metric = "logLoss",
+                       trControl = fit.control, 
+                       trace = FALSE)
+```
+
+
+```{r}
+xbGrid <- expand.grid(
+  nrounds = c(50, 100, 150),
+  max_depth = c(2, 3,4),
+  gamma = c(0),
+  eta = c(0.1, 0.2, 0.3, 0.4),
+  colsample_bytree = c(0.5,0.6, 0.8),
+  min_child_weight = c(1),
+  subsample = c(0.75, 1)
+)
+
+model_xboost <- train(Status ~., data = train, 
+                        method = "xgbTree", 
+                        trControl = fit.control, 
+                        verbose = FALSE, 
+                        tuneGrid = xbGrid,
+                        ## Specify which metric to optimize
+                        metric = "logLoss")
+```
+
+```{r}
+plot_grid(plot(model_multinom), plot(model_random))
+plot(model_xboost)
+```
+
+Calculation of the prediction of the probabilities on train data set to obtain the multi-class logarithmic loss for comparison of the models performance.
+```{r}
+pred_multinom <- predict(model_multinom, newdata = train %>% select(-Status), 
+                type = 'prob')
+pred_random <- predict(model_random, newdata = train %>% select(-Status), 
+                type = 'prob')
+pred_xgboost <- predict(model_xboost, newdata = train %>% select(-Status), 
+                type = 'prob')
+```
+
+
+Calculation of the Logloss metric multi class model in the train data set.
+```{r}
+data.frame(Model = c('Miltinom','Random Forest', 'Xgboost'),
+           'LogLoss' = c(MultiLogLoss(y_true = train$Status, y_pred = pred_multinom), MultiLogLoss(y_true = train$Status, y_pred = pred_random),MultiLogLoss(y_true = train$Status, y_pred = pred_xgboost))) 
+```
+
+The Xgboost model has the best performance. I don't understand yet why the random forest model is giving a NA value when the Logloss is calculated with the MultiLogLoss function.
+
+## Important Variables 
+```{r}
+varImp(model_xboost) %>%
+ggplot(aes(x = Importance), top = 5) +
+  geom_col(width=0.5)+
+  theme(#text = element_text(size = 12),
+    panel.background = element_rect("white"),
+    panel.grid = element_line("grey95"),
+    panel.border = element_rect(NA),
+    legend.position= 'none')
+```
+
+The graph shows the model top 5 most important variables for the classification of the pacient's cirrhosis status. 
+
+Bilirubin is a water-soluble compound excreted from the body in the urine or feces. The excess of bilirubin in the urine can be an indication of a pathological situation like cirrhosis. The model indicates this variable as the most important for the classification of patient's cirrhosis status. Elevated concentration of copper is also indicative of liver problems. Prothrombin is a protein produced in the liver that helps the blood clot. The measurement of the time the blood takes to clot points to the amount of protein available. If there is a high amount of it shows a cirrhosis problem.
+
+The indication of these variables by the model shows a good agreement between the model and what the literature says.
+
+# Submission file
+
+Preparing the submission file with the Id of each observation of the test data set followed by the predicted probabilities of each status.
+
+Test data set preparation to calculate the predicted probabilities
+```{r}
+test <- test %>% mutate_at(c('Drug','Sex','Ascites','Hepatomegaly',
+                               'Spiders', 'Edema', 'Stage'),as.factor) %>% 
+  mutate_at(c('Cholesterol', 'Copper', 'Tryglicerides', 'Platelets'),as.integer)
+```
+
+Calculating the probabilities:
+```{r}
+pred <- predict(model_xboost, newdata = test %>% select(-id), 
+                type = 'prob') %>% rename(Status_C = 1, Status_CL = 2, Status_D = 3)
+```
+
+Generating and saving the submission file
+```{r}
+submission <- test %>% select(id) %>% cbind(pred)
+
+write.csv(submission, "submission.csv",eol = "\n", row.names = FALSE)
+```
+
+
+
+
